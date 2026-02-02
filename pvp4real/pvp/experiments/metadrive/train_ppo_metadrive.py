@@ -6,9 +6,8 @@ import os
 from pathlib import Path
 import multiprocessing
 
-# Clean up problematic environment variables before multiprocessing
-if 'PYTHONUTF8' in os.environ:
-    del os.environ['PYTHONUTF8']
+# Ensure PYTHONUTF8 is valid before multiprocessing
+os.environ["PYTHONUTF8"] = "1"
 
 # Set multiprocessing start method to avoid fork issues in Docker
 try:
@@ -39,6 +38,8 @@ if __name__ == '__main__':
     parser.add_argument("--wandb", action="store_true", help="Set to True to upload stats to wandb.")
     parser.add_argument("--wandb_project", type=str, default="", help="The project name for wandb.")
     parser.add_argument("--wandb_team", type=str, default="", help="The team name for wandb.")
+    parser.add_argument("--log_dir", type=str, default="/pvp4real/logs", help="Folder to store the logs.")
+    parser.add_argument("--checkpoint_dir", type=str, default="/pvp3real/checkpoints", help="Folder to store the checkpoints.")
     args = parser.parse_args()
 
     # FIXME: Remove this in future.
@@ -60,10 +61,12 @@ if __name__ == '__main__':
     if not use_wandb:
         print("[WARNING] Please note that you are not using wandb right now!!!")
 
-    experiment_dir = Path("runs") / experiment_batch_name
+    experiment_dir = Path(args.log_dir) / Path("runs") / experiment_batch_name
     trial_dir = experiment_dir / trial_name
     os.makedirs(experiment_dir, exist_ok=True)
     os.makedirs(trial_dir, exist_ok=True)
+    checkpoint_dir = Path(args.checkpoint_dir) / experiment_batch_name / trial_name
+    os.makedirs(checkpoint_dir, exist_ok=True)
     print(f"We start logging training data into {trial_dir}")
 
     # ===== Setup the config =====
@@ -143,7 +146,7 @@ if __name__ == '__main__':
     # ===== Setup the callbacks =====
     save_freq = 1_0000  # Number of steps per model checkpoint
     callbacks = [
-        CheckpointCallback(name_prefix="rl_model", verbose=2, save_freq=save_freq, save_path=str(trial_dir / "models"))
+        CheckpointCallback(name_prefix="rl_model", verbose=2, save_freq=save_freq, save_path=str(checkpoint_dir))
     ]
     if use_wandb:
         callbacks.append(

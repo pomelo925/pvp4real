@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import os
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional, Sequence, Tuple, Type, Union
 
@@ -87,6 +88,9 @@ class SubprocVecEnv(VecEnv):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
+
+        # Ensure PYTHONUTF8 is a valid value for child processes
+        os.environ["PYTHONUTF8"] = "1"
 
         if start_method is None:
             # Fork is not a thread safe method (see issue #217)
