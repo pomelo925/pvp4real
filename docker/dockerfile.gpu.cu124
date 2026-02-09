@@ -1,0 +1,123 @@
+################################################################################################
+# Base stage
+# - NVIDIA CUDA 12.4 with cuDNN (Ubuntu 22.04, Python 3.10)
+# - System dependencies and tooling
+################################################################################################
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS base-stage
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+# Install system dependencies
+RUN apt update && apt install -y --no-install-recommends \
+    # Python toolchain
+    python3-pip \
+    python3-dev \
+    \
+    # Network / debugging
+    iputils-ping \
+    \
+    # Dev tools
+    git \
+    vim \
+    wget \
+    curl \
+    gnupg2 \
+    lsb-release \
+    software-properties-common \
+    \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip toolchain (pip-managed Python environment only)
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+
+################################################################################################
+# ROS stage
+# - ROS2 Humble Desktop
+# - DDS middleware
+################################################################################################
+FROM base-stage AS ros-stage
+
+# Set up ROS2 Humble repository
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# Install ROS2 Humble Desktop and DDS middleware
+RUN apt update && apt install -y --no-install-recommends \
+    ros-humble-desktop \
+    ros-humble-rmw-cyclonedds-cpp \
+    ros-humble-rosidl-generator-dds-idl \
+    && rm -rf /var/lib/apt/lists/*
+
+
+################################################################################################
+# Python dependencies stage
+# - Core ML / RL / simulation dependencies with CUDA support
+# - PyTorch with CUDA 12.4 support
+# - MetaDrive simulator
+################################################################################################
+FROM ros-stage AS python-deps-stage
+
+RUN apt purge -y python3-sympy || true
+
+# Install PyTorch with CUDA 12.4 support
+RUN pip3 install --no-cache-dir \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+RUN pip3 install --no-cache-dir \
+    \
+    # ------------------------------------------------------------
+    # Core numerical & ML
+    # ------------------------------------------------------------
+    numpy==1.26.4 \
+    "scipy<1.15" \
+    \
+    # ------------------------------------------------------------
+    # RL / environment interface
+    # ------------------------------------------------------------
+    gym==0.26.2 \
+    gymnasium \
+    dm-tree \
+    \
+    # ------------------------------------------------------------
+    # Vision (RGB-D processing)
+    # ------------------------------------------------------------
+    opencv-python-headless \
+    Pillow \
+    imageio \
+    \
+    # ------------------------------------------------------------
+    # Training utilities
+    # ------------------------------------------------------------
+    easydict \
+    tqdm \
+    tensorboard \
+    pandas \
+    matplotlib \
+    wandb
+
+
+################################################################################################
+# Final Release stage
+# - Workspace setup
+# - Install project package
+# - Configure ROS2 environment
+################################################################################################
+FROM python-deps-stage AS release-stage
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy project and install in editable mode
+COPY pvp4real /workspace/pvp4real
+RUN cd /workspace/pvp4real && pip3 install -e .
+
+# Source ROS2 environment for interactive shells
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
+
+CMD ["bash"]

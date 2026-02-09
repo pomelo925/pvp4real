@@ -103,19 +103,59 @@ select_action_tui() {
   echo "$selection"
 }
 
+# TUI menu for selecting platform
+select_platform_tui() {
+  local tui_tool=$1
+  
+  local menu_options=()
+  menu_options+=("cpu" "CPU only (no GPU acceleration)")
+  menu_options+=("gpu-cu124" "GPU CUDA 12.4 (RTX 40 series)")
+  
+  local selection
+  if [ "$tui_tool" = "dialog" ]; then
+    selection=$(DIALOGRC=/dev/null dialog --colors \
+      --backtitle "PVP4Real Docker Manager" \
+      --title " Select Platform " \
+      --cancel-label "Back" \
+      --menu "\nWhich platform do you want to use?" 12 60 2 \
+      "${menu_options[@]}" \
+      2>&1 >/dev/tty)
+  elif [ "$tui_tool" = "whiptail" ]; then
+    selection=$(whiptail --clear \
+      --backtitle "PVP4Real Docker Manager" \
+      --title " Select Platform " \
+      --cancel-button "Back" \
+      --menu "\nWhich platform do you want to use?" 12 60 2 \
+      "${menu_options[@]}" \
+      3>&1 1>&2 2>&3)
+  fi
+  
+  local exit_code=$?
+  
+  if [ $exit_code -ne 0 ]; then
+    return 2  # Back to previous menu
+  fi
+  
+  echo "$selection"
+}
+
 # Show summary before starting
 show_summary_tui() {
   local tui_tool=$1
   local action=$2
+  local platform=$3
+  local compose_file=$4
+  local image_tag=$5
   
   local message="Configuration Summary:\n\n"
   message+="Action: $action\n"
-  message+="Docker Image: pomelo925/pvp4real:latest\n"
-  message+="Compose File: docker/compose.cpu.yml\n"
+  message+="Platform: $platform\n"
+  message+="Docker Image: pomelo925/pvp4real:$image_tag\n"
+  message+="Compose File: $compose_file\n"
   message+="Workspace: workspace/ -> /workspace\n\n"
   message+="Press OK to continue..."
   
-  show_message "$tui_tool" "Confirmation" "$message" 14 60
+  show_message "$tui_tool" "Confirmation" "$message" 15 60
 }
 
 #############################
@@ -124,7 +164,7 @@ show_summary_tui() {
 
 usage() {
   cat << EOF
-Usage: $0 [action]
+Usage: $0 [action] [platform]
 
 action:
   build              Build Docker image
@@ -133,17 +173,21 @@ action:
   deploy             Deploy service (runs pvp.deploy.py)
   cb                 Build ROS2 workspace with colcon (auto-exit after build)
 
+platform (optional, defaults to 'cpu'):
+  cpu                CPU only (no GPU acceleration)
+  gpu-cu124          GPU CUDA 12.4 (RTX 40 series)
+
 Examples:
-  $0 build           # Build PVP4Real CPU Docker image
-  $0 dev             # Start PVP4Real CPU development environment
-  $0 hitl            # Start PVP4Real HITL mode
-  $0 deploy          # Start PVP4Real CPU deployment service
-  $0 cb              # Build ROS2 workspace and exit
+  $0 build cpu       # Build PVP4Real CPU Docker image
+  $0 dev gpu-cu124   # Start PVP4Real GPU development environment
+  $0 hitl cpu        # Start PVP4Real HITL mode (CPU)
+  $0 deploy gpu-cu124 # Start PVP4Real GPU deployment service
+  $0 cb cpu          # Build ROS2 workspace and exit
   $0                 # Interactive TUI menu mode
 
 Configuration:
-  Docker files: docker/dockerfile.cpu
-  Compose file: docker/compose.cpu.yml
+  Docker files: docker/dockerfile.cpu, docker/dockerfile.gpu.cu124
+  Compose files: docker/compose.cpu.yml, docker/compose.gpu.cu124.yml
   Workspace: workspace/ (mounted to /workspace in container)
 EOF
   exit 1
@@ -230,15 +274,6 @@ enter_container() {
 }
 
 main() {
-  # Set up configuration
-  compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
-  project_name="pvp4real-cpu"
-  
-  if [ ! -f "$compose_file" ]; then
-    echo "Error: Compose file not found: $compose_file"
-    exit 1
-  fi
-  
   # Check if arguments are provided
   if [ $# -eq 0 ]; then
     # Interactive TUI mode
@@ -259,8 +294,29 @@ main() {
       [ $action_result -eq 1 ] && exit 0  # Quit
       [ $action_result -eq 3 ] && continue # Separator selected, stay on menu
       
+      # Select platform
+      platform=$(select_platform_tui "$tui_tool")
+      local platform_result=$?
+      
+      [ $platform_result -eq 2 ] && continue # Back to action menu
+      
+      # Set up configuration based on platform
+      if [ "$platform" = "gpu-cu124" ]; then
+        compose_file="$SCRIPT_DIR/docker/compose.gpu.cu124.yml"
+        project_name="pvp4real-gpu-cu124"
+        image_tag="gpu-cu124"
+      else
+        compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
+        project_name="pvp4real-cpu"
+        image_tag="latest"
+      fi
+      
+      if [ ! -f "$compose_file" ]; then
+        show_error "$tui_tool" "Compose file not found: $compose_file"
+      fi
+      
       # Show summary
-      show_summary_tui "$tui_tool" "$action"
+      show_summary_tui "$tui_tool" "$action" "$platform" "$compose_file" "$image_tag"
       
       clear
       
@@ -302,11 +358,31 @@ main() {
   else
     # Command-line mode
     action=$1
+    platform=${2:-cpu}  # Default to cpu if not specified
     
     # Validate inputs
     if [ "$action" != "build" ] && [ "$action" != "dev" ] && [ "$action" != "hitl" ] && [ "$action" != "deploy" ] && [ "$action" != "cb" ]; then
       echo "Error: Invalid action '$action'. Must be 'build', 'dev', 'hitl', 'deploy', or 'cb'."
       usage
+    fi
+    
+    if [ "$platform" != "cpu" ] && [ "$platform" != "gpu-cu124" ]; then
+      echo "Error: Invalid platform '$platform'. Must be 'cpu' or 'gpu-cu124'."
+      usage
+    fi
+    
+    # Set up configuration based on platform
+    if [ "$platform" = "gpu-cu124" ]; then
+      compose_file="$SCRIPT_DIR/docker/compose.gpu.cu124.yml"
+      project_name="pvp4real-gpu-cu124"
+    else
+      compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
+      project_name="pvp4real-cpu"
+    fi
+    
+    if [ ! -f "$compose_file" ]; then
+      echo "Error: Compose file not found: $compose_file"
+      exit 1
     fi
     
     if [ "$action" = "build" ]; then
