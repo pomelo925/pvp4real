@@ -12,10 +12,15 @@ x-common-basic: &common-basic
 
 x-common-ros2: &common-ros2
   volumes:
+    # GUI
+    - "${XAUTHORITY:-$HOME/.Xauthority}:${XAUTHORITY:-/root/.Xauthority}"
+    - "/tmp/.X11-unix:/tmp/.X11-unix"
+    
+    # Workspace
     - ../pvp4real:/workspace/pvp4real
     - ../colcon-ws:/workspace/colcon-ws
     - ./services:/docker/services
-  working_dir: /workspace
+  working_dir: /workspace/pvp4real
   environment:
     DISPLAY: ${DISPLAY}
     QT_X11_NO_MITSHM: 1
@@ -29,15 +34,20 @@ services:
     container_name: pvp4real-cpu-dev
     command: bash
 
-  hitl:
+  online:
     <<: [*common-basic, *common-ros2]
-    container_name: pvp4real-cpu-hitl
-    command: bash /docker/services/hitl.sh
+    container_name: pvp4real-cpu-online
+    command: bash /docker/services/online.sh
 
   deploy:
     <<: [*common-basic, *common-ros2]
     container_name: pvp4real-cpu-deploy
     command: bash /docker/services/deploy.sh
+
+  record:
+    <<: [*common-basic, *common-ros2]
+    container_name: pvp4real-cpu-record
+    command: bash /docker/services/record.sh
 
   cb:
     <<: [*common-basic, *common-ros2]

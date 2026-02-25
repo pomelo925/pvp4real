@@ -1,0 +1,22 @@
+# ============================================================
+# PVP4Real ROS2 Bag Recorder Configuration
+# ============================================================
+
+record:
+  frequency: 5.0      # Hz — recording rate
+
+  # Save path (relative to pvp4real/pvp4real/) per mode
+  paths:
+    offline: "models/offline/"
+    online:  "models/online/"
+    deploy:  "models/deploy/"
+
+  topics:
+    - /camera/camera/camera_info
+    - /camera/camera/color/image_raw
+    - /camera/camera/aligned_depth_to_color/image_raw
+    - /stretch/cmd_vel_teleop
+    - /stretch/cmd_vel
+    - /stretch/is_teleop
+    - /tf
+    - /tf_static

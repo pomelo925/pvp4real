@@ -10,9 +10,9 @@ if [ -f "/workspace/colcon-ws/install/setup.bash" ]; then
 fi
 
 echo '=========================================='
-echo 'Starting PVP HITL (Human-in-the-Loop)...'
+echo 'Starting ROS2 Bag Recorder...'
 echo '=========================================='
 
-# Run the HITL script
+# Run the bag recording script
 cd /workspace
-python3 pvp4real/scripts/pvp.hitl.py
+python3 pvp4real/scripts/record/rosbag.py

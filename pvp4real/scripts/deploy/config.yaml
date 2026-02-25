@@ -1,0 +1,32 @@
+# ============================================================
+# PVP4Real Deployment Configuration
+# ============================================================
+
+# ROS2 topics
+ros2_topics:
+  rgb: "/camera/camera/color/image_raw"
+  depth: "/camera/camera/aligned_depth_to_color/image_raw"
+  is_teleop: "/stretch/is_teleop"
+  cmd_vel_teleop: "/stretch/cmd_vel_teleop"
+  cmd_vel: "/stretch/cmd_vel"
+
+# Common observation / control parameters
+common:
+  hz: 10.0
+  max_lin: 0.4
+  max_ang: 1.2
+  depth_max_m: 5.0
+  stack_n: 5
+  resize:
+    height: 84
+    width: 84
+  seed: 0
+  device: "auto"
+
+# Deployment settings (pvp.deploy.py)
+deployment:
+  # Path to the trained model .zip file (required)
+  checkpoint_path: null    # e.g., "models/online/0003/chkpt-1560f.zip"
+
+  # Policy stale threshold (s): publish zeros if no policy cmd received in this time
+  policy_stale_s: 0.5
