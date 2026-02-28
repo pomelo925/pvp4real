@@ -1,5 +1,9 @@
 .vscode
 
+# Datasets and model artifacts
+pvp4real/datasets/
+pvp4real/models/
+
 # ROS2 colcon build artifacts
 colcon-ws/build/
 colcon-ws/install/

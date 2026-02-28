@@ -1,0 +1,28 @@
+# ============================================================
+# PVP4Real ROS2 Bag Recorder Configuration
+# ============================================================
+
+record:
+  frequency: 5.0      # Hz — recording rate
+
+  # Save path (relative to pvp4real/pvp4real/) per mode
+  paths:
+    offline: "datasets/offline/"
+    online:  "datasets/online/"
+    deploy:  "datasets/deploy/"
+
+  topics:
+    - /camera/camera/color/camera_info
+    - /camera/camera/color/image_raw/compressed
+    - /camera/camera/aligned_depth_to_color/image_raw/compressedDepth
+    - /stretch/cmd_vel_teleop
+    - /stretch/cmd_vel
+    - /stretch/is_teleop
+    - /tf
+    - /tf_static
+
+# ── Decompress ──────────────────────────────────────────────
+decompress:
+  # Path to the run directory to decompress (relative to pvp4real/pvp4real/)
+  # e.g. "datasets/offline/0002" → reads 0002/bag_c, writes 0002/bag
+  target_bag_path: "datasets/offline/0001"

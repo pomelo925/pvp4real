@@ -31,6 +31,9 @@ RUN apt update && apt install -y --no-install-recommends \
     ros-humble-rmw-cyclonedds-cpp \
     ros-humble-rosidl-generator-dds-idl \
     \
+    # ROS2 bag mcap storage plugin
+    ros-humble-rosbag2-storage-mcap \
+    \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip toolchain (pip-managed Python environment only)

@@ -20,21 +20,49 @@
 - [docker](docker) ：容器化環境（CPU 版本）
 - [assets](assets) ：專案圖片與資源
 
-## 如何使用
+## Usage
 
+### Scripts 腳本說明
 
-### 啟動實驗
+[pvp4real/scripts](pvp4real/scripts) 目錄包含以下腳本：
 
-常用腳本在 [pvp4real/scripts](pvp4real/scripts)：
+#### 配置文件
+- **config.yaml** - 統一配置檔，包含所有腳本的參數設定（控制頻率、速度上限、ROS2 話題、訓練參數等）
 
+#### 工具腳本
+- **prepare_checkpoint.py** - 準備檢查點目錄，用於從先前訓練恢復（解壓 .zip 檔並驗證檢查點文件）
+
+#### Stretch3 容器腳本（機器人端）
+- **stretch3.standby.sh** - 啟動 Stretch3 基礎驅動與相機節點（必須最先執行）
+- **stretch3.hitl.py** - HITL 模式的權限仲裁節點（依據 `/stretch/is_teleop` 決定使用人類或策略指令）
+- **stretch3.deploy.py** - 部署模式的權限仲裁節點（僅推理，不訓練）
+
+#### PVP4Real 容器腳本（學習端）
+- **pvp.hitl.py** - HITL 在線訓練循環（發布策略指令至 `/pvp/novice_cmd_vel` 並進行學習）
+- **pvp.deploy.py** - 部署推理循環（僅載入已訓練策略並發布指令，不進行學習）
+
+### 啟動順序
+
+#### HITL 訓練模式
 ```bash
-bash scripts/metadrive_simhuman_pvp4real.sh
+# 1. 在 Stretch3 容器中啟動機器人基礎設施
+bash pvp4real/scripts/stretch3.standby.sh
+
+# 2. 在 Stretch3 容器中啟動權限仲裁節點
+python pvp4real/scripts/stretch3.hitl.py
+
+# 3. 在 PVP4Real 容器中啟動訓練循環
+python pvp4real/scripts/pvp.hitl.py
 ```
 
-或直接執行訓練入口：
-
+#### 部署推理模式
 ```bash
-python pvp/experiments/metadrive/train_pvp_metadrive_fakehuman.py \
-  --exp_name="pvp4real" \
-  --bc_loss_weight=1.0
+# 1. 在 Stretch3 容器中啟動機器人基礎設施
+bash pvp4real/scripts/stretch3.standby.sh
+
+# 2. 在 Stretch3 容器中啟動部署權限節點
+python pvp4real/scripts/stretch3.deploy.py
+
+# 3. 在 PVP4Real 容器中啟動推理循環
+python pvp4real/scripts/pvp.deploy.py --checkpoint <path_to_checkpoint.zip>
 ```

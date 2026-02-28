@@ -1,0 +1,84 @@
+# Usage: python train.py --config scripts/train/offline/config.resume.yaml
+#
+# ============================================================
+# PVP4Real Offline Training Configuration — RESUME
+# ============================================================
+#
+# 用途：從 online HITL 的 checkpoint + buffer 繼續訓練。
+#   此時 replay_buffer 已包含 agent 自主資料（actions_novice != actions_behavior），
+#   with_agent_proxy_value_loss 才有正確語意，可以安全開啟。
+#
+#   Loss 設定：Full PVP
+#   - with_human_proxy_value_loss: true  → Q(obs, teleop)  → +q_value_bound
+#   - with_agent_proxy_value_loss: true  → Q(obs, novice)  → -q_value_bound （需有 agent 資料）
+#   - add_bc_loss: true                  → actor 繼續模仿 human action
+#
+# Scratch 訓練請使用 config.yaml。
+# ============================================================
+
+# ROS2 topics
+ros2_topics:
+  rgb: "/camera/camera/color/image_raw"
+  depth: "/camera/camera/aligned_depth_to_color/image_raw"
+  is_teleop: "/stretch/is_teleop"
+  cmd_vel_teleop: "/stretch/cmd_vel_teleop"
+  cmd_vel: "/stretch/cmd_vel"
+
+# Common observation / control parameters
+common:
+  hz: 5.0
+  max_lin: 0.4
+  max_ang: 1.2
+  depth_max_m: 5.0
+  stack_n: 5
+  resize:
+    height: 84
+    width: 84
+  seed: 0
+  device: "auto"
+
+# Training settings (train.py)
+training:
+  is_resume_training: true   # ← RESUME MODE
+
+  # Path to the decompressed bag directory (relative to pvp4real/pvp4real/, or absolute).
+  # e.g. "datasets/offline/0001/bag"
+  # null → auto-detect the latest <dataset_base_path>/<run>/bag.
+  bag_path: null
+  dataset_base_path: "datasets/offline/"   # used for bag auto-detection when bag_path is null
+
+  total_steps: 50000
+  learning_starts: 500
+  batch_size: 128
+  log_interval: 10
+
+  save_analytic_graph: false
+
+  checkpoint:
+    is_saved: true
+    save_every: 100
+    saved_model_path: "models/offline/"
+    # ↓ 必填：指向要 resume 的 .zip 檔案（絕對路徑或相對 pvp4real/pvp4real/）
+    resume_from: null        # e.g. "models/offline/0002/chkpt-5000.zip"
+    overwrite: true
+
+  buffer:
+    size: 10000
+    save_every: 100
+    saved_buffer_path: "models/offline/"
+    # ↓ 選填：指向含有 buffer_human-*.pkl / buffer_replay-*.pkl 的 run dir
+    resume_from: null        # e.g. "models/offline/0002"
+    overwrite: true
+
+  pvp:
+    q_value_bound: 1.0
+    bc_loss_weight: 1.0
+    with_human_proxy_value_loss: true   # Q(obs, teleop_action) → +q_value_bound
+    with_agent_proxy_value_loss: true   # ON: replay_buffer has real novice actions from online HITL
+    only_bc_loss: false
+    add_bc_loss: true
+    gamma: 0.99
+    tau: 0.05
+    learning_rate: 0.0001
+    train_freq: 1
+    gradient_steps: 1
