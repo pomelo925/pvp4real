@@ -378,14 +378,19 @@ class HITLControlGUI:
         self.root.quit()
 
     def update_steps(self, steps: int) -> None:
+        """Thread-safe: schedules the UI update on the main (Tk) thread."""
+        self.root.after(0, self._do_update_steps, steps)
+
+    def _do_update_steps(self, steps: int) -> None:
         self.current_step = steps
         self._steps_lbl.config(text=str(steps))
         self._pbar["value"] = steps
         pct = (steps / self.total_steps * 100) if self.total_steps > 0 else 0
         self._pct_lbl.config(text=f"{pct:.1f}%")
 
-    def start_thread(self) -> threading.Thread:
-        t = threading.Thread(target=self.root.mainloop, daemon=True)
+    def start_training_thread(self, target, *args, **kwargs) -> threading.Thread:
+        """Run *target* in a background thread; mainloop stays on the calling (main) thread."""
+        t = threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True)
         t.start()
         return t
 
@@ -475,8 +480,8 @@ def main() -> None:
                 buffer_size=buf_size,
                 learning_starts=learning_starts,
                 batch_size=batch_size,
-                train_freq=(1, "step"),
-                gradient_steps=1,
+                train_freq=(int(pvp_c["train_freq"]), "step"),
+                gradient_steps=int(pvp_c["gradient_steps"]),
                 gamma=float(pvp_c["gamma"]),
                 tau=float(pvp_c["tau"]),
                 learning_rate=float(pvp_c["learning_rate"]),
@@ -507,34 +512,42 @@ def main() -> None:
         gui = HITLControlGUI(node=node, total_steps=total_steps,
                              run_dir=run_dir, save_every=chkpt_save_every)
         gui.update_steps(trained)
-        gui.start_thread()
 
-        # ── Training loop ──────────────────────────────────────────────────────
+        # ── Training loop (background thread; mainloop runs on main thread) ───
         save_interval = min(chkpt_save_every, buf_save_every)
         remaining = total_steps - trained
 
-        while rclpy.ok() and remaining > 0 and not gui.quit_requested:
-            chunk = min(save_interval, remaining)
-            model.learn(
-                total_timesteps=chunk,
-                reset_num_timesteps=False,
-                log_interval=log_interval,
-            )
-            trained   += chunk
-            remaining -= chunk
-            gui.update_steps(trained)
+        def _training_loop() -> None:
+            nonlocal trained, remaining
+            try:
+                while rclpy.ok() and remaining > 0 and not gui.quit_requested:
+                    chunk = min(save_interval, remaining)
+                    model.learn(
+                        total_timesteps=chunk,
+                        reset_num_timesteps=False,
+                        log_interval=log_interval,
+                    )
+                    trained   += chunk
+                    remaining -= chunk
+                    gui.update_steps(trained)
 
-            if ckpt_c["is_saved"] and trained % chkpt_save_every == 0:
-                save_checkpoint(model, run_dir, trained)
-            if trained % buf_save_every == 0:
-                save_buffers(model, run_dir, trained)
+                    if ckpt_c["is_saved"] and trained % chkpt_save_every == 0:
+                        save_checkpoint(model, run_dir, trained)
+                    if trained % buf_save_every == 0:
+                        save_buffers(model, run_dir, trained)
 
-            node.get_logger().info(f"Step {trained}/{total_steps}")
+                    node.get_logger().info(f"Step {trained}/{total_steps}")
 
-        # Final save
-        save_checkpoint(model, run_dir, trained, final=True)
-        save_buffers(model, run_dir, trained, final=True)
-        node.get_logger().info(f"Training complete. Saved in: {run_dir}")
+                # Final save
+                save_checkpoint(model, run_dir, trained, final=True)
+                save_buffers(model, run_dir, trained, final=True)
+                node.get_logger().info(f"Training complete. Saved in: {run_dir}")
+            finally:
+                # Tell the GUI mainloop to exit when training finishes
+                gui.root.after(0, gui.root.quit)
+
+        gui.start_training_thread(_training_loop)
+        gui.root.mainloop()  # must run on the main thread
 
     except KeyboardInterrupt:
         node.get_logger().info("[Interrupted] Saving checkpoint…")
