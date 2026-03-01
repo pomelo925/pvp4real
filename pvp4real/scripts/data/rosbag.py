@@ -44,8 +44,8 @@ import rosbag2_py
 
 TOPIC_TYPE_MAP: Dict[str, Tuple[str, Any]] = {
     # camera info
-    "/camera/camera/color/camera_info":                                  ("sensor_msgs/msg/CameraInfo",    CameraInfo),
-    "/camera/camera/aligned_depth_to_color/camera_info":                 ("sensor_msgs/msg/CameraInfo",    CameraInfo),
+    "/camera/camera/color/camera_info":                                  ("sensor_msgs/msg/CameraInfo",     CameraInfo),
+    "/camera/camera/aligned_depth_to_color/camera_info":                 ("sensor_msgs/msg/CameraInfo",     CameraInfo),
     # raw images
     "/camera/camera/color/image_raw":                                    ("sensor_msgs/msg/Image",          Image),
     "/camera/camera/aligned_depth_to_color/image_raw":                   ("sensor_msgs/msg/Image",          Image),
@@ -54,11 +54,11 @@ TOPIC_TYPE_MAP: Dict[str, Tuple[str, Any]] = {
     # "/camera/camera/aligned_depth_to_color/image_raw/compressed":        ("sensor_msgs/msg/CompressedImage", CompressedImage),
     "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth":   ("sensor_msgs/msg/CompressedImage", CompressedImage),
     # control
-    "/stretch/cmd_vel_teleop":                                           ("geometry_msgs/msg/Twist",       Twist),
-    "/stretch/cmd_vel":                                                  ("geometry_msgs/msg/Twist",       Twist),
-    "/stretch/is_teleop":                                                ("std_msgs/msg/Bool",             Bool),
-    "/tf":                                                               ("tf2_msgs/msg/TFMessage",        TFMessage),
-    "/tf_static":                                                        ("tf2_msgs/msg/TFMessage",        TFMessage),
+    "/stretch/cmd_vel_teleop":                                           ("geometry_msgs/msg/Twist",        Twist),
+    "/stretch/cmd_vel":                                                  ("geometry_msgs/msg/Twist",        Twist),
+    "/stretch/is_teleop":                                                ("std_msgs/msg/Bool",              Bool),
+    "/tf":                                                               ("tf2_msgs/msg/TFMessage",         TFMessage),
+    "/tf_static":                                                        ("tf2_msgs/msg/TFMessage",         TFMessage),
 }
 
 PVP_ROOT = Path(__file__).parent.parent.parent  # pvp4real/pvp4real/
@@ -98,7 +98,7 @@ class RecorderNode(Node):
         self._latest: Dict[str, Optional[Tuple[int, int, Any]]] = {t: None for t in topics}
         self._last_bag_ts: Dict[str, int] = {}
         self._lock = threading.Lock()
-        
+
         qos_sensor = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -144,12 +144,13 @@ class RecorderNode(Node):
 
         recv_ts_ns = now_ns
         with self._lock:
-          self._latest[topic] = (bag_ts_ns, recv_ts_ns, msg)
+            self._latest[topic] = (bag_ts_ns, recv_ts_ns, msg)
 
     def get_latest(self) -> Dict[str, Optional[Tuple[int, int, Any]]]:
         # return a snapshot copy for writer thread
         with self._lock:
             return dict(self._latest)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Recording session
@@ -201,12 +202,14 @@ class RecordingSession:
         if bag_dir.exists():
             mcap_files = sorted(bag_dir.glob("*.mcap"))
             if mcap_files:
+                old_path = mcap_files[0]
                 new_name = f"{self._tick_count:05d}.mcap"
-                mcap_files[0].rename(bag_dir / new_name)
+                new_path = bag_dir / new_name
+                old_path.rename(new_path)
                 meta_path = bag_dir / "metadata.yaml"
                 if meta_path.exists():
                     text = meta_path.read_text()
-                    text = text.replace(mcap_files[0].name, new_name)
+                    text = text.replace(old_path.name, new_name)
                     meta_path.write_text(text)
 
     def _loop(self) -> None:
@@ -265,13 +268,25 @@ class RecordGUI:
 
         self._root = tk.Tk()
         self._root.title("PVP4Real — Bag Recorder")
-        self._root.geometry("680x400")
-        self._root.resizable(False, False)
+
+        # ✅ Make it adjustable
+        self._root.resizable(True, True)
+
+        # ✅ Grid expansion policy: allow main area to grow
+        self._root.columnconfigure(0, weight=1)
+        self._root.columnconfigure(1, weight=1)
+        self._root.rowconfigure(2, weight=1)  # row with topics/info frames
+
         self._root.protocol("WM_DELETE_WINDOW", self._on_quit)
 
         self._mode_var  = tk.StringVar(value=MODES[0])
         self._mode_btns: list[ttk.Radiobutton] = []
         self._build_ui()
+
+        # ✅ Let Tk compute natural size (fits all widgets), then set it as minimum
+        self._root.update_idletasks()
+        self._root.minsize(self._root.winfo_width(), self._root.winfo_height())
+
         self._poll()
 
     # ── UI ───────────────────────────────────────────────────────────────────
@@ -280,12 +295,16 @@ class RecordGUI:
         r = self._root
 
         ttk.Label(r, text="ROS2 Bag Recorder", font=("Arial", 15, "bold")).grid(
-            row=0, column=0, columnspan=2, pady=(14, 6), padx=14
+            row=0, column=0, columnspan=2, pady=(14, 6), padx=14, sticky="ew"
         )
 
         # ── Mode selector ────────────────────────────────────────────────────
         mode_frame = ttk.LabelFrame(r, text="Recording Mode", padding=8)
         mode_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=4)
+
+        # allow the radio buttons area to stretch
+        for c in range(len(MODES)):
+            mode_frame.columnconfigure(c, weight=1)
 
         for col, mode in enumerate(MODES):
             btn = ttk.Radiobutton(
@@ -293,16 +312,21 @@ class RecordGUI:
                 variable=self._mode_var, value=mode,
                 command=self._on_mode_change,
             )
-            btn.grid(row=0, column=col, padx=20, pady=2)
+            btn.grid(row=0, column=col, padx=20, pady=2, sticky="w")
             self._mode_btns.append(btn)
 
         # ── Left column: topic list ───────────────────────────────────────────
         topics_frame = ttk.LabelFrame(r, text="Record Topics", padding=8)
         topics_frame.grid(row=2, column=0, sticky="nsew", padx=(14, 4), pady=4)
 
+        topics_frame.rowconfigure(0, weight=1)
+        topics_frame.columnconfigure(0, weight=1)
+
         lb = tk.Listbox(
-            topics_frame, height=len(self._topics),
-            font=("Courier", 9), width=38,
+            topics_frame,
+            height=1,          # ✅ don't force fixed size
+            width=1,           # ✅ let layout decide
+            font=("Courier", 9),
             selectmode=tk.NONE, activestyle="none",
         )
         for t in self._topics:
@@ -312,16 +336,18 @@ class RecordGUI:
         sb = ttk.Scrollbar(topics_frame, orient="vertical", command=lb.yview)
         lb.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
-        topics_frame.columnconfigure(0, weight=1)
 
         # ── Right column: session info ────────────────────────────────────────
         info_frame = ttk.LabelFrame(r, text="Session", padding=10)
         info_frame.grid(row=2, column=1, sticky="nsew", padx=(4, 14), pady=4)
 
+        info_frame.columnconfigure(1, weight=1)
+        info_frame.rowconfigure(99, weight=1)  # keep some elasticity
+
         ttk.Label(info_frame, text="Folder:", anchor="w").grid(row=0, column=0, sticky="w")
         self._path_label = ttk.Label(
             info_frame, text=self._current_path_str(),
-            foreground="gray", font=("Arial", 9), wraplength=200, justify="left"
+            foreground="gray", font=("Arial", 9), wraplength=260, justify="left"
         )
         self._path_label.grid(row=0, column=1, sticky="w", padx=6)
 
@@ -341,11 +367,11 @@ class RecordGUI:
         self._status_label = ttk.Label(info_frame, text="Idle", foreground="gray", font=("Arial", 11, "bold"))
         self._status_label.grid(row=4, column=1, sticky="w", padx=6, pady=(10, 0))
 
-        info_frame.columnconfigure(1, weight=1)
-
         # ── Buttons ───────────────────────────────────────────────────────────
         btn_frame = ttk.Frame(r)
-        btn_frame.grid(row=3, column=0, columnspan=2, pady=14)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=14, sticky="ew")
+        for c in range(3):
+            btn_frame.columnconfigure(c, weight=1)
 
         self._record_btn = ttk.Button(btn_frame, text="Record", width=16, command=self._on_record)
         self._record_btn.grid(row=0, column=0, padx=10)
@@ -354,9 +380,6 @@ class RecordGUI:
         self._stop_btn.grid(row=0, column=1, padx=10)
 
         ttk.Button(btn_frame, text="Quit", width=16, command=self._on_quit).grid(row=0, column=2, padx=10)
-
-        r.columnconfigure(0, weight=1)
-        r.columnconfigure(1, weight=1)
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 

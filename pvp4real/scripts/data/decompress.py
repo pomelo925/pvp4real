@@ -15,8 +15,9 @@ Usage:
 from __future__ import annotations
 
 import sys
+import struct
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -37,7 +38,8 @@ from tf2_msgs.msg import TFMessage
 
 PVP_ROOT = Path(__file__).parent.parent.parent  # pvp4real/pvp4real/
 
-# Compressed → raw topic mapping: (raw_topic, raw_type_str, raw_msg_cls, encoding)
+# Compressed → raw topic mapping: (raw_topic, raw_type_str, raw_msg_cls, encoding_hint)
+# NOTE: depth encoding is determined from CompressedImage.format at runtime (16UC1 or 32FC1).
 DECOMPRESS_MAP: Dict[str, Tuple[str, str, Any, str]] = {
     "/camera/camera/color/image_raw/compressed": (
         "/camera/camera/color/image_raw",
@@ -49,7 +51,7 @@ DECOMPRESS_MAP: Dict[str, Tuple[str, str, Any, str]] = {
         "/camera/camera/aligned_depth_to_color/image_raw",
         "sensor_msgs/msg/Image",
         Image,
-        "16UC1",
+        "depth",  # hint only; real encoding parsed from comp_msg.format
     ),
 }
 
@@ -63,6 +65,8 @@ PASSTHROUGH_TYPE_MAP: Dict[str, Tuple[str, Any]] = {
     "/tf_static":                         ("tf2_msgs/msg/TFMessage",      TFMessage),
 }
 
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -74,48 +78,121 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
-def decompress_image(comp_msg: CompressedImage, encoding: str) -> Image:
-    """Decompress a CompressedImage into a raw Image message."""
-    raw_bytes = np.frombuffer(comp_msg.data, dtype=np.uint8)
+def parse_depth_encoding_from_format(fmt: str) -> str:
+    """
+    Typical compressedDepth format strings:
+      "16UC1; compressedDepth png"
+      "32FC1; compressedDepth png"
+    We return the left side before ';'.
+    """
+    left = fmt.split(";", 1)[0].strip()
+    return left if left else "16UC1"
 
-    if encoding == "rgb8":
+
+def split_header_and_png(data: bytes) -> Tuple[Optional[Tuple[float, float]], bytes]:
+    """
+    Robustly split ConfigHeader + PNG payload for compressedDepth.
+
+    compressed_depth_image_transport prepends a ConfigHeader (commonly 12 bytes):
+      enum format (4 bytes) + float depthParam[2] (8 bytes)
+    followed by PNG bytes.
+
+    We detect PNG magic; if found at offset 12/8/16 we treat preceding bytes as header.
+    Returns:
+      (depthQuantA, depthQuantB) or None, png_payload_bytes
+    """
+    if data.startswith(PNG_MAGIC):
+        return None, data
+
+    for off in (12, 8, 16):
+        if len(data) > off + 8 and data[off:off + 8] == PNG_MAGIC:
+            header = data[:off]
+            payload = data[off:]
+            if len(header) >= 8:
+                qA, qB = struct.unpack("<ff", header[-8:])
+                return (qA, qB), payload
+            return None, payload
+
+    # Can't find PNG magic; return as-is (may fail later in imdecode)
+    return None, data
+
+
+def decompress_image(comp_msg: CompressedImage, encoding_hint: str) -> Image:
+    """Decompress a CompressedImage into a raw Image message."""
+    if encoding_hint == "rgb8":
         # JPEG → BGR → RGB
-        bgr = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
+        raw = np.frombuffer(comp_msg.data, dtype=np.uint8)
+        bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         if bgr is None:
             raise ValueError("Failed to decode color compressed image")
         data = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         step = data.shape[1] * 3
-    elif encoding == "16UC1":
-        # image_transport compressedDepth prepends a 12-byte ConfigHeader
-        # (float depthParam[2] = 8 bytes, int format = 4 bytes) before the PNG.
-        # Try stripping the header first; fall back to raw bytes if that fails.
-        data = None
-        for offset in (12, 0):
-            if len(raw_bytes) > offset:
-                candidate = cv2.imdecode(raw_bytes[offset:], cv2.IMREAD_UNCHANGED)
-                if candidate is not None:
-                    data = candidate
-                    break
-        if data is None:
+
+        img = Image()
+        img.header = comp_msg.header
+        img.height = data.shape[0]
+        img.width = data.shape[1]
+        img.encoding = "rgb8"
+        img.is_bigendian = 0
+        img.step = step
+        img.data = data.tobytes()
+        return img
+
+    if encoding_hint == "depth":
+        # Determine actual encoding from CompressedImage.format
+        encoding = parse_depth_encoding_from_format(comp_msg.format)  # "16UC1" or "32FC1"
+
+        # Split header and PNG payload (robust)
+        quant_params, png_bytes = split_header_and_png(bytes(comp_msg.data))
+
+        # Decode PNG
+        buf = np.frombuffer(png_bytes, dtype=np.uint8)
+        dec = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+        if dec is None:
             raise ValueError(
                 f"Failed to decode depth compressed image "
-                f"(data_len={len(raw_bytes)}, format={comp_msg.format!r})"
+                f"(data_len={len(comp_msg.data)}, format={comp_msg.format!r})"
             )
-        if data.dtype != np.uint16:
-            data = data.astype(np.uint16)
-        step = data.shape[1] * 2
-    else:
-        raise ValueError(f"Unsupported encoding: {encoding}")
 
-    img = Image()
-    img.header    = comp_msg.header
-    img.height    = data.shape[0]
-    img.width     = data.shape[1]
-    img.encoding  = encoding
-    img.is_bigendian = 0
-    img.step      = step
-    img.data      = data.tobytes()
-    return img
+        img = Image()
+        img.header = comp_msg.header
+        img.height = int(dec.shape[0])
+        img.width = int(dec.shape[1])
+        img.is_bigendian = 0
+
+        if encoding == "16UC1":
+            if dec.dtype != np.uint16:
+                dec = dec.astype(np.uint16, copy=False)
+            img.encoding = "16UC1"
+            img.step = img.width * 2
+            img.data = dec.tobytes(order="C")
+            return img
+
+        if encoding == "32FC1":
+            # compressedDepth for 32FC1 uses inverse-depth with quant params.
+            if dec.dtype != np.uint16:
+                dec = dec.astype(np.uint16, copy=False)
+
+            if quant_params is None:
+                raise ValueError("Missing depth quantization parameters (depthQuantA/B) for 32FC1 compressedDepth")
+
+            qA, qB = quant_params
+            inv = dec.astype(np.float32)
+            denom = inv - np.float32(qB)
+
+            depth = np.zeros_like(inv, dtype=np.float32)
+            valid = (inv != 0) & (np.abs(denom) > 1e-12)
+            depth[valid] = np.float32(qA) / denom[valid]
+            depth[~valid] = 0.0
+
+            img.encoding = "32FC1"
+            img.step = img.width * 4
+            img.data = depth.tobytes(order="C")
+            return img
+
+        raise ValueError(f"Unsupported depth encoding parsed from format: {encoding} (format={comp_msg.format!r})")
+
+    raise ValueError(f"Unsupported encoding hint: {encoding_hint}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,11 +245,11 @@ def main() -> None:
         topic, raw_data, ts_ns = reader.read_next()
         if topic in IMG_TOPICS:
             try:
-                _, raw_type, _, encoding = DECOMPRESS_MAP[topic]
+                _, raw_type, _, encoding_hint = DECOMPRESS_MAP[topic]
                 comp_msg = deserialize_message(raw_data, CompressedImage)
                 if len(comp_msg.data) == 0:
                     raise ValueError(f"empty compressed data (format={comp_msg.format!r})")
-                img_msg = decompress_image(comp_msg, encoding)
+                img_msg = decompress_image(comp_msg, encoding_hint)
                 records.append((topic, raw_data, ts_ns, img_msg, True))
             except Exception as e:
                 records.append((topic, raw_data, ts_ns, None, False))

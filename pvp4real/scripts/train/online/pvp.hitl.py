@@ -83,17 +83,24 @@ def get_next_run_dir(base_path: Path) -> Path:
     return base_path / f"{next_num:04d}"
 
 
-def save_checkpoint(model: PVPTD3, run_dir: Path, step: int, final: bool = False) -> None:
-    suffix = f"{step}f" if final else str(step)
-    path = run_dir / f"chkpt-{suffix}.zip"
+def save_checkpoint(model: PVPTD3, run_dir: Path, step: int, final: bool = False, custom_path: str = None) -> None:
+    if custom_path:
+        path = Path(custom_path)
+    else:
+        suffix = f"{step}f" if final else str(step)
+        path = run_dir / f"chkpt-{suffix}.zip"
     model.save(str(path))
     return path
 
 
-def save_buffers(model: PVPTD3, run_dir: Path, step: int, final: bool = False) -> None:
-    suffix = f"{step}f" if final else str(step)
-    h_path = run_dir / f"buffer_human-{suffix}.pkl"
-    r_path = run_dir / f"buffer_replay-{suffix}.pkl"
+def save_buffers(model: PVPTD3, run_dir: Path, step: int, final: bool = False, custom_human_path: str = None, custom_replay_path: str = None) -> None:
+    if custom_human_path and custom_replay_path:
+        h_path = Path(custom_human_path)
+        r_path = Path(custom_replay_path)
+    else:
+        suffix = f"{step}f" if final else str(step)
+        h_path = run_dir / f"buffer_human-{suffix}.pkl"
+        r_path = run_dir / f"buffer_replay-{suffix}.pkl"
     model.save_replay_buffer(str(h_path), str(r_path))
 
 
@@ -309,6 +316,8 @@ class HITLControlGUI:
         self.current_step = 0
         self.quit_requested = False
         self.is_teleop    = False
+        self.training_started = False
+        self.training_stopped = False
 
         self.root = tk.Tk()
         self.root.title("PVP4Real — Online HITL Training")
@@ -356,22 +365,56 @@ class HITLControlGUI:
         self._mode_lbl = ttk.Label(mf, text="Navigation (Policy)", font=("Arial", 10, "bold"), foreground="green")
         self._mode_lbl.grid(row=0, column=1, padx=8)
 
-        # Quit button
-        ttk.Button(r, text="Save & Quit", width=20, command=self._on_quit).grid(
-            row=3, column=0, columnspan=2, pady=14
-        )
+
+        # Start/Stop/Save & Quit buttons
+        btn_frame = ttk.Frame(r)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=14)
+        self._start_btn = ttk.Button(btn_frame, text="Start Training", width=16, command=self._on_start)
+        self._start_btn.grid(row=0, column=0, padx=6)
+        self._stop_btn = ttk.Button(btn_frame, text="Stop Training", width=16, command=self._on_stop, state="disabled")
+        self._stop_btn.grid(row=0, column=1, padx=6)
+        ttk.Button(btn_frame, text="Save & Quit", width=16, command=self._on_quit).grid(row=0, column=2, padx=6)
+
+        self._status_lbl = ttk.Label(r, text="Waiting to start...", font=("Arial", 10, "italic"), foreground="blue")
+        self._status_lbl.grid(row=4, column=0, columnspan=2)
+    def _on_start(self) -> None:
+        self.training_started = True
+        self.training_stopped = False
+        self._start_btn.config(state="disabled")
+        self._stop_btn.config(state="normal")
+        self._status_lbl.config(text="Training in progress...", foreground="green")
+
+    def _on_stop(self) -> None:
+        self.training_stopped = True
+        self._stop_btn.config(state="disabled")
+        self._status_lbl.config(text="Training stopped. You may Save & Quit.", foreground="red")
 
         r.columnconfigure(0, weight=1)
 
     def _on_mode_switch(self) -> None:
+        import subprocess
         self.is_teleop = not self.is_teleop
         self.node.publish_is_teleop(self.is_teleop)
         if self.is_teleop:
             self._mode_btn.config(text="Switch to Navigation Mode")
             self._mode_lbl.config(text="Gamepad (Teleop)", foreground="orange")
+            # 切到 gamepad mode
+            try:
+                subprocess.Popen([
+                    "ros2", "service", "call", "/switch_to_gamepad_mode", "std_srvs/srv/Trigger", "{}"
+                ])
+            except Exception as e:
+                print(f"[WARN] Failed to call /switch_to_gamepad_mode: {e}")
         else:
             self._mode_btn.config(text="Switch to Gamepad Mode")
             self._mode_lbl.config(text="Navigation (Policy)", foreground="green")
+            # 切到 navigation mode
+            try:
+                subprocess.Popen([
+                    "ros2", "service", "call", "/switch_to_navigation_mode", "std_srvs/srv/Trigger", "{}"
+                ])
+            except Exception as e:
+                print(f"[WARN] Failed to call /switch_to_navigation_mode: {e}")
 
     def _on_quit(self) -> None:
         self.quit_requested = True
@@ -387,6 +430,12 @@ class HITLControlGUI:
         self._pbar["value"] = steps
         pct = (steps / self.total_steps * 100) if self.total_steps > 0 else 0
         self._pct_lbl.config(text=f"{pct:.1f}%")
+
+    def wait_for_start(self):
+        # 阻塞直到按下 Start
+        while not self.training_started and not self.quit_requested:
+            self.root.update()
+            self.root.after(100)
 
     def start_training_thread(self, target, *args, **kwargs) -> threading.Thread:
         """Run *target* in a background thread; mainloop stays on the calling (main) thread."""
@@ -440,6 +489,10 @@ def main() -> None:
     model_base = PVP_ROOT / ckpt_c["saved_model_path"]
     run_dir    = get_next_run_dir(model_base)
     run_dir.mkdir(parents=True, exist_ok=True)
+    # 新增：讀取 config.yaml 的自訂路徑欄位
+    save_chkpt_path = ckpt_c.get("save_chkpt_path")
+    save_buffer_human_path = buf_c.get("save_buffer_human_path")
+    save_buffer_replay_path = buf_c.get("save_buffer_replay_path")
 
     rclpy.init()
     node: Optional[HITLCache] = None
@@ -509,9 +562,13 @@ def main() -> None:
         )
 
         # ── GUI ────────────────────────────────────────────────────────────────
+
         gui = HITLControlGUI(node=node, total_steps=total_steps,
                              run_dir=run_dir, save_every=chkpt_save_every)
         gui.update_steps(trained)
+
+        # 等待使用者按下 Start
+        gui.wait_for_start()
 
         # ── Training loop (background thread; mainloop runs on main thread) ───
         save_interval = min(chkpt_save_every, buf_save_every)
@@ -520,7 +577,7 @@ def main() -> None:
         def _training_loop() -> None:
             nonlocal trained, remaining
             try:
-                while rclpy.ok() and remaining > 0 and not gui.quit_requested:
+                while rclpy.ok() and remaining > 0 and not gui.quit_requested and not gui.training_stopped:
                     chunk = min(save_interval, remaining)
                     model.learn(
                         total_timesteps=chunk,
@@ -532,15 +589,15 @@ def main() -> None:
                     gui.update_steps(trained)
 
                     if ckpt_c["is_saved"] and trained % chkpt_save_every == 0:
-                        save_checkpoint(model, run_dir, trained)
+                        save_checkpoint(model, run_dir, trained, custom_path=save_chkpt_path)
                     if trained % buf_save_every == 0:
-                        save_buffers(model, run_dir, trained)
+                        save_buffers(model, run_dir, trained, custom_human_path=save_buffer_human_path, custom_replay_path=save_buffer_replay_path)
 
                     node.get_logger().info(f"Step {trained}/{total_steps}")
 
                 # Final save
                 save_checkpoint(model, run_dir, trained, final=True)
-                save_buffers(model, run_dir, trained, final=True)
+                save_buffers(model, run_dir, trained, final=True, custom_human_path=save_buffer_human_path, custom_replay_path=save_buffer_replay_path)
                 node.get_logger().info(f"Training complete. Saved in: {run_dir}")
             finally:
                 # Tell the GUI mainloop to exit when training finishes
@@ -552,8 +609,8 @@ def main() -> None:
     except KeyboardInterrupt:
         node.get_logger().info("[Interrupted] Saving checkpoint…")
         if "model" in dir() and "trained" in dir() and trained > 0:
-            save_checkpoint(model, run_dir, trained, final=True)
-            save_buffers(model, run_dir, trained, final=True)
+            save_checkpoint(model, run_dir, trained, final=True, custom_path=save_chkpt_path)
+            save_buffers(model, run_dir, trained, final=True, custom_human_path=save_buffer_human_path, custom_replay_path=save_buffer_replay_path)
 
     finally:
         if gui is not None:

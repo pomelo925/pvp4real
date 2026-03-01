@@ -13,8 +13,8 @@ ros2_topics:
 # Common observation / control parameters
 common:
   hz: 5.0
-  max_lin: 0.4
-  max_ang: 1.2
+  max_lin: 2.0         # 線速度上限 2 m/s
+  max_ang: 1.5708      # 角速度上限 90 deg/s (約 1.5708 rad/s)
   depth_max_m: 5.0
   stack_n: 5
   resize:
@@ -27,7 +27,7 @@ common:
 training:
   # is_resume_training: False → train from scratch
   # is_resume_training: True  → must provide checkpoint.resume_from (+ optionally buffer.resume_from)
-  is_resume_training: false
+  is_resume_training: true
 
   total_steps: 50000
   learning_starts: 500
@@ -40,16 +40,21 @@ training:
   checkpoint:
     is_saved: true
     save_every: 100          # steps
-    saved_model_path: "models/online/"
-    resume_from: null        # path to .zip file, required when is_resume_training=true
+    saved_model_path: "/workspace/pvp4real/models/online/"
+    resume_from: "/workspace/pvp4real/models/offline/0001/chkpt-15000f.zip"        # path to .zip file, required when is_resume_training=true
     overwrite: true
+    # Optional: specify full checkpoint file path (overrides saved_model_path)
+    save_chkpt_path:     # e.g. "models/online/0001/chkpt-250.zip"
 
   buffer:
     size: 10000              # capacity for each of human_buffer & replay_buffer
     save_every: 100          # steps
-    saved_buffer_path: "models/online/"
-    resume_from: null        # path to run dir (e.g., models/online/0002), optional
+    saved_buffer_path: "/workspace/pvp4real/models/online/"
+    resume_from: "/workspace/pvp4real/models/offline/0001/buffer_human-15000f.pkl"        # optional
     overwrite: true
+    # Optional: specify full buffer file path (overrides saved_buffer_path)
+    save_buffer_human_path: null   # e.g. "models/online/0001/buffer_human-250.pkl"
+    save_buffer_replay_path: null  # e.g. "models/online/0001/buffer_replay-250.pkl"
 
   pvp:
     q_value_bound: 1.0

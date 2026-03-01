@@ -6,7 +6,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ROS_DOMAIN_ID=25
-export DISPLAY=localhost:10.0
+export DISPLAY=:1
 
 #############################
 # TUI Helper Functions
@@ -61,7 +61,6 @@ show_error() {
 # TUI menu for selecting action
 select_action_tui() {
   local tui_tool=$1
-  
   local menu_options=()
   menu_options+=("dev" "Development (interactive shell)")
   menu_options+=("online" "Online Training (Human-in-the-Loop)")
@@ -70,7 +69,6 @@ select_action_tui() {
   menu_options+=("cb" "Build colcon workspace")
   menu_options+=("────────── " "")
   menu_options+=("build" "Build Docker image")
-  
   local selection
   if [ "$tui_tool" = "dialog" ]; then
     selection=$(DIALOGRC=/dev/null dialog --colors \
@@ -89,19 +87,44 @@ select_action_tui() {
       "${menu_options[@]}" \
       3>&1 1>&2 2>&3)
   fi
-  
   local exit_code=$?
-  
   # Check if separator was selected
   if [ "$selection" = "────────── " ]; then
     return 3  # Separator selected, stay on menu
   fi
-  
   if [ $exit_code -ne 0 ]; then
     clear
     return 1  # Quit
   fi
-  
+  echo "$selection"
+}
+
+# TUI menu for selecting platform (cpu/gpu)
+select_platform_tui() {
+  local tui_tool=$1
+  local menu_options=("cpu" "CPU (default)" "gpu-cu124" "GPU (CUDA 12.4)")
+  local selection
+  if [ "$tui_tool" = "dialog" ]; then
+    selection=$(DIALOGRC=/dev/null dialog --colors \
+      --backtitle "PVP4Real Docker Manager" \
+      --title " Select Platform " \
+      --cancel-label "Back" \
+      --menu "\nWhich platform do you want to use?" 12 60 2 \
+      "${menu_options[@]}" \
+      2>&1 >/dev/tty)
+  elif [ "$tui_tool" = "whiptail" ]; then
+    selection=$(whiptail --clear \
+      --backtitle "PVP4Real Docker Manager" \
+      --title " Select Platform " \
+      --cancel-button "Back" \
+      --menu "\nWhich platform do you want to use?" 12 60 2 \
+      "${menu_options[@]}" \
+      3>&1 1>&2 2>&3)
+  fi
+  local exit_code=$?
+  if [ $exit_code -ne 0 ]; then
+    return 1  # Back
+  fi
   echo "$selection"
 }
 
@@ -109,14 +132,17 @@ select_action_tui() {
 show_summary_tui() {
   local tui_tool=$1
   local action=$2
-  
+  local compose_file=$3
+  local docker_image="pomelo925/pvp4real:latest"
+  if [[ "$compose_file" == *gpu* ]]; then
+    docker_image="pomelo925/pvp4real:gpu-cu124"
+  fi
   local message="Configuration Summary:\n\n"
   message+="Action: $action\n"
-  message+="Docker Image: pomelo925/pvp4real:latest\n"
-  message+="Compose File: docker/compose.cpu.yml\n"
+  message+="Docker Image: $docker_image\n"
+  message+="Compose File: ${compose_file##*/}\n"
   message+="Workspace: workspace/ -> /workspace\n\n"
   message+="Press OK to continue..."
-  
   show_message "$tui_tool" "Confirmation" "$message" 14 60
 }
 
@@ -235,90 +261,95 @@ enter_container() {
 }
 
 main() {
-  # Set up configuration
-  compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
-  project_name="pvp4real-cpu"
-  
-  if [ ! -f "$compose_file" ]; then
-    echo "Error: Compose file not found: $compose_file"
-    exit 1
-  fi
-  
-  # Check if arguments are provided
+  # Interactive TUI or CLI mode
   if [ $# -eq 0 ]; then
     # Interactive TUI mode
     tui_tool=$(check_tui_tool)
-    
     if [ "$tui_tool" = "none" ]; then
       echo "Warning: Neither dialog nor whiptail found. Using command-line mode."
       echo "Install dialog or whiptail for interactive menu: sudo apt install dialog"
       echo ""
       usage
     fi
-    
     # Interactive loop
     while true; do
       action=$(select_action_tui "$tui_tool")
       local action_result=$?
-      
       [ $action_result -eq 1 ] && exit 0  # Quit
       [ $action_result -eq 3 ] && continue # Separator selected, stay on menu
-      
-      # Show summary
-      show_summary_tui "$tui_tool" "$action"
-      
-      clear
-      
-      # Execute action
-      if [ "$action" = "build" ]; then
-        build_docker_image "$compose_file"
-        read -p "Press Enter to return to menu..."
-        continue
-      elif [ "$action" = "cb" ]; then
-        echo "=========================================="
-        echo "Running colcon build..."
-        echo "=========================================="
-        docker compose -p "$project_name" -f "$compose_file" up cb
-        echo ""
-        echo "=========================================="
-        echo "Colcon build completed!"
-        echo "=========================================="
-        read -p "Press Enter to return to menu..."
-        continue
-      else
-        # Start interactive service
-        service=$action
-        setup_x11_forwarding
-        cleanup_containers "$project_name" "$compose_file"
-        start_service "$project_name" "$compose_file" "$service"
-        enter_container "$project_name" "$compose_file" "$service"
-        
-        # Cleanup message
-        echo ""
-        echo "=========================================="
-        echo "Service session ended."
-        echo "To stop the service, run:"
-        echo "  docker compose -p $project_name -f $compose_file down"
-        echo "=========================================="
-        
-        exit 0
-      fi
+
+      # Platform selection (skip for separator)
+      while true; do
+        platform=$(select_platform_tui "$tui_tool")
+        local platform_result=$?
+        [ $platform_result -eq 1 ] && break # Back to action menu
+
+        # Set compose_file and project_name based on platform
+        if [ "$platform" = "gpu-cu124" ]; then
+          compose_file="$SCRIPT_DIR/docker/compose.gpu.cu124.yml"
+          project_name="pvp4real-gpu-cu124"
+        else
+          compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
+          project_name="pvp4real-cpu"
+        fi
+
+        # Show summary
+        show_summary_tui "$tui_tool" "$action" "$compose_file"
+        clear
+
+        # Execute action
+        if [ "$action" = "build" ]; then
+          build_docker_image "$compose_file"
+          read -p "Press Enter to return to menu..."
+          break
+        elif [ "$action" = "cb" ]; then
+          echo "=========================================="
+          echo "Running colcon build..."
+          echo "=========================================="
+          docker compose -p "$project_name" -f "$compose_file" up cb
+          echo ""
+          echo "=========================================="
+          echo "Colcon build completed!"
+          echo "=========================================="
+          read -p "Press Enter to return to menu..."
+          break
+        else
+          # Start interactive service
+          service=$action
+          setup_x11_forwarding
+          cleanup_containers "$project_name" "$compose_file"
+          start_service "$project_name" "$compose_file" "$service"
+          enter_container "$project_name" "$compose_file" "$service"
+          # Cleanup message
+          echo ""
+          echo "=========================================="
+          echo "Service session ended."
+          echo "To stop the service, run:"
+          echo "  docker compose -p $project_name -f $compose_file down"
+          echo "=========================================="
+          exit 0
+        fi
+      done
     done
   else
-    # Command-line mode
+    # Command-line mode (default to cpu if not specified)
     action=$1
-    
+    platform=${2:-cpu}
+    if [ "$platform" = "gpu-cu124" ]; then
+      compose_file="$SCRIPT_DIR/docker/compose.gpu.cu124.yml"
+      project_name="pvp4real-gpu-cu124"
+    else
+      compose_file="$SCRIPT_DIR/docker/compose.cpu.yml"
+      project_name="pvp4real-cpu"
+    fi
     # Validate inputs
     if [ "$action" != "build" ] && [ "$action" != "dev" ] && [ "$action" != "online" ] && [ "$action" != "deploy" ] && [ "$action" != "record" ] && [ "$action" != "cb" ]; then
       echo "Error: Invalid action '$action'. Must be 'build', 'dev', 'online', 'deploy', 'record', or 'cb'."
       usage
     fi
-    
     if [ "$action" = "build" ]; then
-      # Build docker image
       build_docker_image "$compose_file"
     elif [ "$action" = "cb" ]; then
-      # Run colcon build service
       echo "=========================================="
       echo "Running colcon build..."
       echo "=========================================="
@@ -328,14 +359,11 @@ main() {
       echo "Colcon build completed!"
       echo "=========================================="
     else
-      # Setup and start service
       service=$action
       setup_x11_forwarding
       cleanup_containers "$project_name" "$compose_file"
       start_service "$project_name" "$compose_file" "$service"
       enter_container "$project_name" "$compose_file" "$service"
-      
-      # Cleanup message
       echo ""
       echo "=========================================="
       echo "Service session ended."
