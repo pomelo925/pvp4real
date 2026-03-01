@@ -78,6 +78,7 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+<<<<<<< Updated upstream
 def parse_depth_encoding_from_format(fmt: str) -> str:
     """
     Typical compressedDepth format strings:
@@ -87,6 +88,56 @@ def parse_depth_encoding_from_format(fmt: str) -> str:
     """
     left = fmt.split(";", 1)[0].strip()
     return left if left else "16UC1"
+=======
+def repair_metadata(bag_dir: Path) -> None:
+    """Fix metadata.yaml if the referenced .mcap filenames no longer exist.
+
+    rosbag.py renames <bag>_0.mcap → <ticks>.mcap after recording, but older
+    datasets or interrupted stops may leave the metadata pointing to the old
+    name.  This function patches every stale entry to the actual file found on
+    disk so that rosbag2_py can open the bag without errors.
+    """
+    meta_path = bag_dir / "metadata.yaml"
+    if not meta_path.exists():
+        return
+
+    actual_mcaps = {f.name: f for f in bag_dir.glob("*.mcap")}
+    if not actual_mcaps:
+        return  # nothing to repair
+
+    text = meta_path.read_text()
+    changed = False
+
+    with open(meta_path) as f:
+        meta = yaml.safe_load(f)
+
+    # Collect all filenames the metadata claims exist
+    claimed: list[str] = []
+    for entry in meta.get("rosbag2_bagfile_information", {}).get("relative_file_paths", []):
+        claimed.append(entry)
+    for entry in meta.get("rosbag2_bagfile_information", {}).get("files", []):
+        if isinstance(entry, dict):
+            claimed.append(entry.get("path", ""))
+
+    # For each claimed name that is missing, remap to an actual file
+    for old_name in claimed:
+        if old_name and not (bag_dir / old_name).exists():
+            # Find the one mcap file that isn't claimed by any other name
+            candidates = [n for n in actual_mcaps if n not in claimed or n == old_name]
+            if len(candidates) == 1:
+                new_name = candidates[0]
+                text = text.replace(old_name, new_name)
+                print(f"  [META] repaired: {old_name!r} → {new_name!r}")
+                changed = True
+
+    if changed:
+        meta_path.write_text(text)
+
+
+def decompress_image(comp_msg: CompressedImage, encoding: str) -> Image:
+    """Decompress a CompressedImage into a raw Image message."""
+    raw_bytes = np.frombuffer(comp_msg.data, dtype=np.uint8)
+>>>>>>> Stashed changes
 
 
 def split_header_and_png(data: bytes) -> Tuple[Optional[Tuple[float, float]], bytes]:
@@ -199,26 +250,23 @@ def decompress_image(comp_msg: CompressedImage, encoding_hint: str) -> Image:
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    cfg = load_config()
-    rel_path = cfg.get("decompress", {}).get("target_bag_path")
-    if not rel_path:
-        print("[ERROR] 'decompress.target_bag_path' not set in config.yaml", file=sys.stderr)
-        sys.exit(1)
-
-    run_dir  = PVP_ROOT / rel_path
-    src_dir  = run_dir / "bag_c"
-    dst_dir  = run_dir / "bag"
+def process_one(run_dir: Path) -> None:
+    """Decompress a single run directory (run_dir/bag_c → run_dir/bag)."""
+    src_dir = run_dir / "bag_c"
+    dst_dir = run_dir / "bag"
 
     if not src_dir.exists():
         print(f"[ERROR] Source bag_c not found: {src_dir}", file=sys.stderr)
-        sys.exit(1)
+        return
 
     if dst_dir.exists():
         print(f"[WARN] Destination already exists, will overwrite: {dst_dir}")
 
     print(f"Source : {src_dir}")
     print(f"Dest   : {dst_dir}")
+
+    # Repair metadata.yaml if filenames were renamed after recording
+    repair_metadata(src_dir)
 
     # Tick window: messages within this tolerance (ns) belong to the same step
     TICK_TOL_NS = 150_000_000  # 150 ms  (recording is 5 Hz → 200 ms/tick)
@@ -325,6 +373,35 @@ def main() -> None:
     print(f"  Decode failures          : {len(failed_ts)}")
     print(f"{'─'*50}")
     print(f"Output: {dst_dir}")
+
+
+def main() -> None:
+    cfg = load_config()
+    raw = cfg.get("decompress", {}).get("target_bag_path")
+    if not raw:
+        print("[ERROR] 'decompress.target_bag_path' not set in config.yaml", file=sys.stderr)
+        sys.exit(1)
+
+    # Accept either a YAML list or a comma-separated string
+    if isinstance(raw, list):
+        rel_paths = [p.strip() for p in raw if p and str(p).strip()]
+    else:
+        rel_paths = [p.strip() for p in str(raw).split(",") if p.strip()]
+
+    if not rel_paths:
+        print("[ERROR] 'decompress.target_bag_path' is empty", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[INFO] {len(rel_paths)} target(s): {rel_paths}")
+
+    for idx, rel_path in enumerate(rel_paths, 1):
+        print(f"\n{'═'*50}")
+        print(f"  [{idx}/{len(rel_paths)}] {rel_path}")
+        print(f"{'═'*50}")
+        run_dir = PVP_ROOT / rel_path
+        process_one(run_dir)
+
+    print(f"\n[INFO] All {len(rel_paths)} target(s) done.")
 
 
 if __name__ == "__main__":
